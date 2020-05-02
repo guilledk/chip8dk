@@ -1,23 +1,28 @@
 // http://devernay.free.fr/hacks/chip8/C8TECH10.HTM
 
 extern crate rand;
+extern crate byteorder;
 
-use std::io::Read;
+
+
+
 use std::fs::File;
 use std::env;
 
 use rand::Rng;
 
+use byteorder::{BigEndian, ReadBytesExt};
+
 const STACK_SIZE: usize = 256;
 const MEM_SIZE: usize = 4096;
 
 struct CHIP8 {
-	vx: [u16; 16],
-	i: u16, pc: u16,
-	stack: [u8; STACK_SIZE],
+	vx: [u16; 16], // V registers
+	i: u16, pc: u16, // I & program counter
+	stack: [u8; STACK_SIZE], sp: u8,
 	delay_timer: u8,
 	sound_timer: u8,
-	ram: [u8; MEM_SIZE],
+	ram: [u8; MEM_SIZE]
 }
 
 // Opcode
@@ -59,37 +64,55 @@ impl CHIP8 {
 		CHIP8 {
 			vx: [0; 16],
 			i: 0, pc: 0,
-			stack: [0; STACK_SIZE],
+			stack: [0; STACK_SIZE], sp: 0,
 			delay_timer: 0,
 			sound_timer: 0,
 			ram: [0; MEM_SIZE]
 		}
 	}
 
-	fn lrom(&mut self, raw_rom: Vec<u8>, offset: usize) {
-		for i in 0 .. raw_rom.len() {
-			self.ram[offset + i] = raw_rom[i]
+	fn lrom(&mut self, rom_path: &String, offset: usize) {
+
+		let mut rom_file = File::open(rom_path).unwrap();
+
+		let file_meta = rom_file.metadata().unwrap();
+
+		for i in (0 .. file_meta.len()).step_by(2) {
+			let inst: u16 = rom_file.read_u16::<BigEndian>().unwrap();
+			let idx: usize = i as usize + offset;
+
+			self.ram[idx]     = (inst >> 8) as u8;
+			self.ram[idx + 1] = (inst & 0xFF) as u8;
 		}
 	}
 
 	fn step(&mut self) -> Result<(), EvalError> {
 
-		let inst: u16 = 
-			((self.ram[(self.pc as usize) + 1] as u16) << 8) | 
-			self.ram[self.pc as usize] as u16;
+		let inst = 
+			((self.ram[self.pc as usize] as u16) << 8) | 
+			self.ram[(self.pc as usize) + 1] as u16;
 
 		let op = get_op(inst);
 
-		if op == 0xc {
+		if op == 0x0 {
 
-			let mut rng = rand::thread_rng();
-			let n = rng.gen_range(0, 255);
-			let reg = get_4bit_h(inst) as usize;
-			let lit = get_byte(inst);
+			if inst == 0x00e0 {
 
-			self.vx[reg] = lit & n;
+				println!("cls");
 
-			println!("rnd v{:x?} {:x?}", reg, lit);
+			} else if inst == 0x00ee {
+
+				println!("ret");
+
+			} else {
+
+				let addr = get_addr(inst);
+
+				self.pc = addr;
+
+				println!("sys {:x?}", addr);
+
+			}
 
 		} else if op == 0x6 {
 
@@ -100,9 +123,25 @@ impl CHIP8 {
 
 			println!("ld v{:x?} {:x?}", reg, lit);
 
+		}  else if op == 0xc {
+
+			let mut rng = rand::thread_rng();
+			let n = rng.gen_range(0, 255);
+			let reg = get_4bit_h(inst) as usize;
+			let lit = get_byte(inst);
+
+			self.vx[reg] = lit & n;
+
+			println!("rnd v{:x?} {:x?}", reg, lit);
+
 		} else {
 
-			println!("pc: {:x?}, opcode: {:x?}", self.pc, op);
+			println!(
+				"pc: {:x?}, opcode: {:x?}, {:x?}",
+				self.pc,
+				op,
+				inst
+				);
 			
 			return Err(EvalError::UnknownOpcode)
 
@@ -117,21 +156,16 @@ fn main() {
 
 	let args: Vec<String> = env::args().collect();
 
-	let mut rom_file = File::open(&args[1]).unwrap();
-	let mut tmp_buff: Vec<u8> = Vec::new();
-
-	rom_file.read_to_end(&mut tmp_buff).unwrap();
-
 	let mut vm = CHIP8::new();
 
-	vm.lrom(tmp_buff, 0x200);
+	vm.lrom(&args[1], 0x200);
 	vm.pc = 0x200;
 
 	let mut exit = false;
 	while !exit {
 
 		match vm.step() {
-			Ok(_) => vm.pc += 1,
+			Ok(_) => vm.pc += 2,
 			Err(_) => exit = true,
 		}
 
